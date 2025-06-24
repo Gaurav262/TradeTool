@@ -2,7 +2,7 @@ import pandas as pd
 import streamlit as st
 import numpy as np
 from itertools import combinations
-from sklearn.linear_model import LinearRegression
+
 import warnings
 import time
 import hashlib
@@ -11,7 +11,29 @@ from datetime import datetime
 from scipy.signal import find_peaks
 from sklearn.cluster import KMeans
 warnings.filterwarnings('ignore')
+import numpy as np
 
+def linear_regression_fast(x, y):
+    """Fast linear regression replacement for sklearn"""
+    n = len(x)
+    if n < 2:
+        return 0.0, 0.0
+    
+    x_mean = np.mean(x)
+    y_mean = np.mean(y)
+    
+    xy_sum = np.sum((x - x_mean) * (y - y_mean))
+    xx_sum = np.sum((x - x_mean) ** 2)
+    yy_sum = np.sum((y - y_mean) ** 2)
+    
+    if xx_sum == 0.0 or yy_sum == 0.0:
+        return 0.0, 0.0
+    
+    beta = xy_sum / xx_sum
+    correlation = xy_sum / np.sqrt(xx_sum * yy_sum)
+    r_squared = correlation ** 2
+    
+    return beta, r_squared
 # Configure Streamlit page
 st.set_page_config(
     page_title="Range Bound Strategies",
@@ -932,7 +954,7 @@ def calculate_enhanced_signals_with_local_ranges(live_df, regression_cache, hist
 # ==================== EXISTING FUNCTIONS ====================
 
 def calculate_regression_ratio_original(hist_series1, hist_series2):
-    """Calculate the regression ratio between two historical series"""
+    """Calculate regression ratio without sklearn"""
     try:
         aligned_data = pd.DataFrame({
             'y': hist_series1,
@@ -942,18 +964,17 @@ def calculate_regression_ratio_original(hist_series1, hist_series2):
         if len(aligned_data) < 10:
             return None, None
         
-        X = aligned_data['x'].values.reshape(-1, 1)
         y = aligned_data['y'].values
+        x = aligned_data['x'].values
         
-        reg = LinearRegression()
-        reg.fit(X, y)
+        beta, r_squared = linear_regression_fast(x, y)
         
-        beta = reg.coef_[0]
-        r_squared = reg.score(X, y)
-        
+        if beta == 0.0 and r_squared == 0.0:
+            return None, None
+            
         return beta, r_squared
         
-    except Exception as e:
+    except Exception:
         return None, None
 
 @st.cache_data(ttl=86400)
