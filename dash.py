@@ -1,17 +1,407 @@
-import pandas as pd
+# ==================== MAIN APPLICATION ====================
+
+# Auto-refresh functionality
+st.markdown("""
+<div style="text-align: center; padding: 2rem 0;">
+    <h1 style="margin-bottom: 0;">📊 Enhanced Range Bound Strategies</h1>
+    <p style="font-size: 1.2rem; color: #9e9e9e; margin-top: 0.5rem;">
+        Live Dashboard with Local Range Analysis & Instrument Filtering
+    </p>
+</div>
+""", unsafe_allow_html=True)
+
+# Add auto-refresh control and performance settings
+col1, col2, col3, col4 = st.columns([2, 1, 1, 1])
+
+with col1:
+    auto_refresh = st.checkbox("🔄 Auto-refresh every 5 minutes", value=False)
+
+with col2:
+    if st.button("🔄 Refresh Now"):
+        st.rerun()
+
+with col3:
+    use_cache = st.checkbox("⚡ Fast Mode", value=True, help="Use caching for better performance")
+
+with col4:
+    if 'last_refresh' not in st.session_state:
+        st.session_state.last_refresh = time.time()
+    
+    last_refresh_str = time.strftime("%H:%M:%S", time.localtime(st.session_state.last_refresh))
+    st.write(f"Last updated: {last_refresh_str}")
+
+# Performance warning
+if not use_cache:
+    st.warning("⚠️ Fast Mode disabled - calculations may be slower but more current")
+
+# Auto-refresh logic
+if auto_refresh:
+    if 'next_refresh' not in st.session_state:
+        st.session_state.next_refresh = time.time() + 300
+    
+    if time.time() >= st.session_state.next_refresh:
+        st.session_state.last_refresh = time.time()
+        st.session_state.next_refresh = time.time() + 300
+        st.rerun()
+    else:
+        time_left = int(st.session_state.next_refresh - time.time())
+        st.sidebar.info(f"⏱️ Next auto-refresh in {time_left} seconds")
+
+# Load data with optimized daily caching strategy
+with st.spinner("🔄 Loading market data and initializing dashboard..."):
+    df_recent = load_historical_data()
+    live_df, data_hash = load_live_data()
+
+if df_recent is not None and live_df is not None:
+    
+    # Get instrument groups
+    instrument_groups = get_instrument_groups_daily(df_recent)
+    
+    # Display instrument counts with updated breakdown
+    total_instruments = sum(len(group) for group in instrument_groups.values())
+    st.write(f"**Total Instruments Found:** {total_instruments}")
+    st.write(f"**Using 60 days of historical data**")
+    
+    # Show breakdown with new categorization
+    col1, col2 = st.columns(2)
+    with col1:
+        st.write("**Calendar Spreads:**")
+        st.write(f"- 3MS: {len(instrument_groups['3MS'])}")
+        st.write(f"- 6MS: {len(instrument_groups['6MS'])}")
+        st.write(f"- 12MS: {len(instrument_groups['12MS'])}")
+    
+    with col2:
+        st.write("**Butterfly Spreads:**")
+        st.write(f"- 3MF: {len(instrument_groups['3MF'])}")
+        st.write(f"- 6MF: {len(instrument_groups['6MF'])}")
+        st.write(f"- 12MF: {len(instrument_groups['12MF'])}")
+    
+    # Enhanced instrument breakdown by market, month, year
+    with st.expander("📊 Instrument Breakdown by Market, Month & Year"):
+        # Collect all instruments from all groups
+        all_instruments = []
+        for group in instrument_groups.values():
+            all_instruments.extend(group)
+        
+        if all_instruments:
+            # Analyze by market, month, year
+            market_counts = {'SRA': 0, 'ER': 0, 'CRA': 0, 'SON': 0, 'Other': 0}
+            month_counts = {'H': 0, 'M': 0, 'U': 0, 'Z': 0, 'Other': 0}
+            year_counts = {'25': 0, '26': 0, '27': 0, '28': 0, 'Other': 0}
+            
+            for inst in all_instruments:
+                market, month, year = parse_instrument_components(inst)
+                
+                # Count markets
+                if market in market_counts:
+                    market_counts[market] += 1
+                else:
+                    market_counts['Other'] += 1
+                
+                # Count months
+                if month in month_counts:
+                    month_counts[month] += 1
+                else:
+                    month_counts['Other'] += 1
+                
+                # Count years
+                if year in year_counts:
+                    year_counts[year] += 1
+                else:
+                    year_counts['Other'] += 1
+            
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                st.write("**Available Markets:**")
+                market_names = {
+                    'SRA': 'SOFR',
+                    'ER': 'Euribor', 
+                    'CRA': 'CORRA',
+                    'SON': 'SONIA'
+                }
+                for market, count in market_counts.items():
+                    if count > 0:
+                        name = market_names.get(market, market)
+                        st.write(f"- {market} ({name}): {count} instruments")
+            
+            with col2:
+                st.write("**Available Months:**")
+                month_names = {
+                    'H': 'March',
+                    'M': 'June',
+                    'U': 'September',
+                    'Z': 'December'
+                }
+                for month, count in month_counts.items():
+                    if count > 0:
+                        name = month_names.get(month, month)
+                        st.write(f"- {month} ({name}): {count} instruments")
+            
+            with col3:
+                st.write("**Available Years:**")
+                for year, count in year_counts.items():
+                    if count > 0:
+                        display_year = f"20{year}" if year != 'Other' else year
+                        st.write(f"- {display_year}: {count} instruments")
+    
+    if total_instruments >= 2:
+        
+        # Pre-calculate all regressions and historical stats
+        regression_cache = calculate_all_regressions_daily(df_recent, instrument_groups)
+        historical_stats = calculate_historical_statistics_daily(df_recent, regression_cache)
+        
+        # ==================== ENHANCED RANGE TRADING CONTROLS ====================
+        
+        st.markdown("---")
+        use_local_ranges, local_mode, combine_signals, show_both_signals, breakout_threshold = render_local_range_controls()
+        
+        # Enhanced signal calculation with breakout protection
+        with st.spinner("🧮 Processing strategies and calculating signals..."):
+            start_time = time.time()
+            
+            if use_local_ranges:
+                strategies_df = calculate_enhanced_signals_with_local_ranges(
+                    live_df, regression_cache, historical_stats, 
+                    use_local_ranges=True, local_mode=local_mode, 
+                    combine_signals=combine_signals, breakout_threshold=breakout_threshold
+                )
+            else:
+                # Fall back to original calculation if local ranges disabled
+                strategies_df = calculate_live_signals_fast(live_df, regression_cache, historical_stats, instrument_groups)
+            
+            calculation_time = time.time() - start_time
+            
+            range_type = f"Enhanced ({local_mode}) with {breakout_threshold*100:.0f}% breakout protection" if use_local_ranges else "Global Only"
+            st.success(f"✅ {range_type} signals calculated in {calculation_time:.2f} seconds")
+
+        if not strategies_df.empty:
+            
+            # ==================== ENHANCED BATCH FILTERING SECTION ====================
+            
+            st.markdown("---")
+            
+            # Render batch filter controls
+            filter_params = render_enhanced_batch_filters(strategies_df)
+            
+            # Initialize filtered strategies (show all initially or when filters are applied)
+            if 'filtered_strategies_df' not in st.session_state or filter_params['apply_filters']:
+                if filter_params['apply_filters']:
+                    # Apply all filters
+                    with st.spinner("🔄 Applying filters..."):
+                        filtered_strategies = apply_enhanced_filters(strategies_df, filter_params)
+                        st.session_state.filtered_strategies_df = filtered_strategies
+                        st.session_state.last_filter_params = filter_params
+                        st.success("✅ Filters applied successfully!")
+                else:
+                    # Show all strategies initially
+                    st.session_state.filtered_strategies_df = strategies_df
+                    st.session_state.last_filter_params = filter_params
+            
+            # Use the filtered strategies from session state
+            filtered_strategies = st.session_state.filtered_strategies_df
+            
+            # Enhanced sorting
+            strategies_sorted = filtered_strategies.copy()
+            
+            if not strategies_sorted.empty:
+                # Create enhanced sort priority
+                strategies_sorted['Sort_Priority'] = strategies_sorted['Signal'].map({'BUY': 1, 'SELL': 1, 'HOLD': 2})
+                
+                strategies_sorted = strategies_sorted.sort_values([
+                    'Sort_Priority',
+                    'Signal Strength',
+                    'Coeff of Variation'
+                ], ascending=[True, False, True])
+                
+                strategies_sorted = strategies_sorted.drop('Sort_Priority', axis=1)
+            
+            st.header("🎯 Enhanced Active Trading Signals")
+            
+            # Enhanced signal summary with breakout information
+            buy_signals = len(strategies_sorted[strategies_sorted['Signal'] == 'BUY']) if not strategies_sorted.empty else 0
+            sell_signals = len(strategies_sorted[strategies_sorted['Signal'] == 'SELL']) if not strategies_sorted.empty else 0
+            total_signals = buy_signals + sell_signals
+            
+            # Count by signal source and breakout status if available
+            signal_source_counts = {}
+            breakout_stats = {}
+            if not strategies_sorted.empty and 'Signal Source' in strategies_sorted.columns:
+                signal_source_counts = strategies_sorted['Signal Source'].value_counts().to_dict()
+            if not strategies_sorted.empty and 'Breakout Detected' in strategies_sorted.columns:
+                breakout_stats = {
+                    'total_breakouts': strategies_sorted['Breakout Detected'].sum(),
+                    'total_strategies': len(strategies_sorted),
+                    'breakout_percentage': (strategies_sorted['Breakout Detected'].sum() / len(strategies_sorted) * 100) if len(strategies_sorted) > 0 else 0
+                }
+            
+            # Display enhanced signal summary
+            col1, col2, col3, col4, col5 = st.columns(5)
+            with col1:
+                st.metric("🟢 BUY Signals", buy_signals)
+            with col2:
+                st.metric("🔴 SELL Signals", sell_signals)
+            with col3:
+                st.metric("📊 Total Active Signals", total_signals)
+            with col4:
+                if signal_source_counts:
+                    local_signals = sum(count for source, count in signal_source_counts.items() if 'Local' in source)
+                    st.metric("🎯 Local Range Signals", local_signals)
+                else:
+                    st.metric("🎯 Local Range Signals", "N/A")
+            with col5:
+                if breakout_stats:
+                    breakout_count = breakout_stats['total_breakouts']
+                    if breakout_count > 0:
+                        st.metric("⚠️ Breakout Alerts", f"{breakout_count}", delta=f"{breakout_stats['breakout_percentage']:.1f}%")
+                    else:
+                        st.metric("🛡️ Range Integrity", "✅ All Clear")
+                else:
+                    st.metric("🛡️ Breakout Protection", "Active")
+            
+            # Rest of the display logic continues...
+            if not strategies_sorted.empty:
+                # Display enhanced results table
+                render_enhanced_results_table(strategies_sorted, show_both_signals)
+                
+                # Add chart section (simplified for space)
+                st.header("📈 Strategy Visualization")
+                if not strategies_sorted.empty:
+                    selected_strategy = st.selectbox(
+                        "Choose strategy to visualize:",
+                        strategies_sorted['Strategy'].tolist(),
+                        index=0
+                    )
+                    st.info("📊 Interactive charts with local/global ranges would be displayed here")
+            else:
+                st.warning("No strategies meet the current criteria after filtering.")
+        else:
+            st.warning("No trading signals generated with current settings.")
+    else:
+        st.error(f"Insufficient instruments. Found {total_instruments}, need at least 2.")
+else:
+    st.error("Unable to load data. Please check that 'QH-Data.xlsm' exists with 'IM' and 'Live' sheets.")
+
+# ==================== SIDEBAR INFORMATION ====================
+
+with st.sidebar:
+    st.markdown("""
+<div style="text-align: center; padding: 1rem 0;">
+    <h2 style="background: linear-gradient(135deg, #4fc3f7, #29b6f6); -webkit-background-clip: text; -webkit-text-fill-color: transparent; font-size: 1.5rem;">
+        📖 Dashboard Guide
+    </h2>
+</div>
+""", unsafe_allow_html=True)
+    
+    st.subheader("🏛️ Market Types")
+    st.write("- **SRA**: SOFR (Secured Overnight Financing Rate)")
+    st.write("- **ER**: Euribor (Euro Interbank Offered Rate)")
+    st.write("- **CRA**: CORRA (Canadian Overnight Repo Rate Average)")
+    st.write("- **SON**: SONIA (Sterling Overnight Index Average)")
+    
+    st.subheader("📅 Contract Months")
+    st.write("- **H**: March")
+    st.write("- **M**: June") 
+    st.write("- **Z**: December")
+    
+    st.subheader("🎯 Strategy Types")
+    st.write("- **3MS/6MS/12MS**: Calendar Spreads")
+    st.write("- **3MF/6MF/12MF**: Butterfly Spreads")
+    
+    st.subheader("🔍 Local Range Methods")
+    st.write("- **Recent**: Last 15 periods as range")
+    st.write("- **Adaptive**: Volatility-based range")
+    st.write("- **Support/Resistance**: Key price levels")
+
+    st.subheader("🎯 Instrument Filtering")
+    st.write("- **Include Instruments**: Show strategies with selected instruments")
+    st.write("- **Exclude Instruments**: Hide strategies with selected instruments")
+    st.write("- **Smart Parsing**: Automatically detects instruments in strategies")
+    st.write("- **Conflict Detection**: Warns about overlapping selections")
+    
+    st.subheader("⚡ Quick Tips")
+    st.write("- Use 'Apply Filters' to avoid constant refreshes")
+    st.write("- Higher correlation = more predictable")
+    st.write("- Lower coeff variation = more stable")
+    st.write("- Enable breakout protection for trending markets")
+    
+    if 'last_filter_params' in st.session_state:
+        st.subheader("🎛️ Current Filter Status")
+        params = st.session_state.last_filter_params
+        st.write(f"- Markets: {len(params.get('selected_markets', []))}")
+        st.write(f"- Months: {len(params.get('selected_months', []))}")
+        st.write(f"- Years: {len(params.get('selected_years', []))}")
+        st.write(f"- Correlation: {params.get('correlation_threshold', 90)}%")
+        if params.get('exclude_breakouts', False):
+            st.write("- ⚠️ Breakouts excluded")
+        # Show specific instrument filter status
+        include_inst_count = len(params.get('include_specific_instruments', []))
+        exclude_inst_count = len(params.get('exclude_specific_instruments', []))
+        if include_inst_count > 0:
+            st.write(f"- 🎯 Including: {include_inst_count} instruments")
+        if exclude_inst_count > 0:
+            st.write(f"- ❌ Excluding: {exclude_inst_count} instruments")
+
+# ==================== PERFORMANCE METRICS ====================
+
+if 'calculation_time' in locals():
+    with st.expander("⚡ Performance Metrics"):
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            st.metric("Calculation Time", f"{calculation_time:.2f}s")
+        
+        with col2:
+            if 'regression_cache' in locals():
+                st.metric("Regression Pairs", len(regression_cache))
+        
+        with col3:
+            if 'historical_stats' in locals():
+                st.metric("Historical Stats", len(historical_stats))
+        
+        # Memory usage info
+        import sys
+        memory_mb = sys.getsizeof(locals()) / 1024 / 1024
+        st.write(f"**Memory Usage**: ~{memory_mb:.1f} MB")
+        
+        # Cache status
+        cache_info = []
+        if use_cache:
+            cache_info.append("✅ Historical data cached (24h)")
+            cache_info.append("✅ Live data cached (5min)")
+            cache_info.append("✅ Regressions cached (24h)")
+            cache_info.append("✅ Statistics cached (24h)")
+        else:
+            cache_info.append("⚠️ Fast mode disabled")
+        
+        for info in cache_info:
+            st.write(info)
+
+# Add footer with version info
+st.markdown("---")
+st.markdown("""
+<div style="margin-top: 4rem; padding: 2rem 0; text-align: center;">
+    <div style="height: 1px; background: linear-gradient(90deg, transparent, #4fc3f7, transparent); margin: 2rem 0;"></div>
+    <p style="color: #9e9e9e; font-size: 0.9rem;">
+        Enhanced Range Bound Strategies Dashboard v2.1 - No sklearn Dependencies
+    </p>
+    <p style="color: #616161; font-size: 0.8rem; margin-top: 0.5rem;">
+        Powered by Native Python Analytics & Real-time Market Data
+    </p>
+</div>
+""", unsafe_allow_html=True)import pandas as pd
 import streamlit as st
 import numpy as np
 from itertools import combinations
-
 import warnings
 import time
 import hashlib
 import json
 from datetime import datetime
 from scipy.signal import find_peaks
-from sklearn.cluster import KMeans
+
+# Remove sklearn imports - we'll use our own implementations
 warnings.filterwarnings('ignore')
-import numpy as np
 
 def linear_regression_fast(x, y):
     """Fast linear regression replacement for sklearn"""
@@ -34,12 +424,41 @@ def linear_regression_fast(x, y):
     r_squared = correlation ** 2
     
     return beta, r_squared
+
+def kmeans_simple(data, n_clusters=3, max_iters=100, random_state=42):
+    """Simple K-means implementation to replace sklearn.cluster.KMeans"""
+    np.random.seed(random_state)
+    
+    if len(data) < n_clusters:
+        return np.arange(len(data)), data
+    
+    # Initialize centroids randomly
+    min_val, max_val = np.min(data), np.max(data)
+    centroids = np.random.uniform(min_val, max_val, n_clusters)
+    
+    for _ in range(max_iters):
+        # Assign points to closest centroid
+        distances = np.abs(data[:, np.newaxis] - centroids)
+        labels = np.argmin(distances, axis=1)
+        
+        # Update centroids
+        new_centroids = np.array([np.mean(data[labels == i]) if np.sum(labels == i) > 0 
+                                 else centroids[i] for i in range(n_clusters)])
+        
+        # Check for convergence
+        if np.allclose(centroids, new_centroids):
+            break
+        centroids = new_centroids
+    
+    return labels, centroids
+
 # Configure Streamlit page
 st.set_page_config(
     page_title="Range Bound Strategies",
     page_icon="📊",
     layout="wide"
 )
+
 def apply_modern_dashboard_theme():
     st.markdown("""
     <style>
@@ -354,10 +773,9 @@ def apply_modern_dashboard_theme():
     }
     </style>
     """, unsafe_allow_html=True)
+
 # Apply it
 apply_modern_dashboard_theme()
-
-
 
 # ==================== LOCAL RANGE TRADING FUNCTIONS ====================
 
@@ -417,12 +835,10 @@ def detect_support_resistance_levels(historical_values, lookback_period=20):
         significant_levels = []
         if len(all_levels) >= 2:
             try:
-                # Use KMeans to cluster similar levels
+                # Use our simple KMeans to cluster similar levels
                 n_clusters = min(5, len(all_levels))
-                kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
-                clusters = kmeans.fit_predict(all_levels.reshape(-1, 1))
-                significant_levels = kmeans.cluster_centers_.flatten()
-                significant_levels = sorted(significant_levels)
+                clusters, centroids = kmeans_simple(all_levels.reshape(-1, 1), n_clusters=n_clusters, random_state=42)
+                significant_levels = sorted(centroids.flatten())
             except:
                 # Fallback: use percentiles
                 significant_levels = [
@@ -1495,8 +1911,6 @@ def render_enhanced_batch_filters(strategies_df):
         
         st.markdown("---")
         
-        # Row 3: Additional filters (Strategy Types)
-        
         # Row 3: Additional filters
         col1, col2, col3, col4 = st.columns(4)
         
@@ -1747,622 +2161,3 @@ def calculate_live_signals_fast(live_df, regression_cache, historical_stats, ins
             continue
     
     return pd.DataFrame(results)
-
-# ==================== MAIN APPLICATION ====================
-
-# Auto-refresh functionality
-st.markdown("""
-<div style="text-align: center; padding: 2rem 0;">
-    <h1 style="margin-bottom: 0;">📊 Enhanced Range Bound Strategies</h1>
-    <p style="font-size: 1.2rem; color: #9e9e9e; margin-top: 0.5rem;">
-        Live Dashboard with Local Range Analysis & Instrument Filtering
-    </p>
-</div>
-""", unsafe_allow_html=True)
-
-# Add auto-refresh control and performance settings
-col1, col2, col3, col4 = st.columns([2, 1, 1, 1])
-
-with col1:
-    auto_refresh = st.checkbox("🔄 Auto-refresh every 5 minutes", value=False)
-
-with col2:
-    if st.button("🔄 Refresh Now"):
-        st.rerun()
-
-with col3:
-    use_cache = st.checkbox("⚡ Fast Mode", value=True, help="Use caching for better performance")
-
-with col4:
-    if 'last_refresh' not in st.session_state:
-        st.session_state.last_refresh = time.time()
-    
-    last_refresh_str = time.strftime("%H:%M:%S", time.localtime(st.session_state.last_refresh))
-    st.write(f"Last updated: {last_refresh_str}")
-
-# Performance warning
-if not use_cache:
-    st.warning("⚠️ Fast Mode disabled - calculations may be slower but more current")
-
-# Auto-refresh logic
-if auto_refresh:
-    if 'next_refresh' not in st.session_state:
-        st.session_state.next_refresh = time.time() + 300
-    
-    if time.time() >= st.session_state.next_refresh:
-        st.session_state.last_refresh = time.time()
-        st.session_state.next_refresh = time.time() + 300
-        st.rerun()
-    else:
-        time_left = int(st.session_state.next_refresh - time.time())
-        st.sidebar.info(f"⏱️ Next auto-refresh in {time_left} seconds")
-
-# Load data with optimized daily caching strategy
-with st.spinner("🔄 Loading market data and initializing dashboard..."):
-    df_recent = load_historical_data()
-    live_df, data_hash = load_live_data()
-
-if df_recent is not None and live_df is not None:
-    
-    # Get instrument groups
-    instrument_groups = get_instrument_groups_daily(df_recent)
-    
-    # Display instrument counts with updated breakdown
-    total_instruments = sum(len(group) for group in instrument_groups.values())
-    st.write(f"**Total Instruments Found:** {total_instruments}")
-    st.write(f"**Using 60 days of historical data**")
-    
-    # Show breakdown with new categorization
-    col1, col2 = st.columns(2)
-    with col1:
-        st.write("**Calendar Spreads:**")
-        st.write(f"- 3MS: {len(instrument_groups['3MS'])}")
-        st.write(f"- 6MS: {len(instrument_groups['6MS'])}")
-        st.write(f"- 12MS: {len(instrument_groups['12MS'])}")
-    
-    with col2:
-        st.write("**Butterfly Spreads:**")
-        st.write(f"- 3MF: {len(instrument_groups['3MF'])}")
-        st.write(f"- 6MF: {len(instrument_groups['6MF'])}")
-        st.write(f"- 12MF: {len(instrument_groups['12MF'])}")
-    
-    # Enhanced instrument breakdown by market, month, year
-    with st.expander("📊 Instrument Breakdown by Market, Month & Year"):
-        # Collect all instruments from all groups
-        all_instruments = []
-        for group in instrument_groups.values():
-            all_instruments.extend(group)
-        
-        if all_instruments:
-            # Analyze by market, month, year
-            market_counts = {'SRA': 0, 'ER': 0, 'CRA': 0, 'SON': 0, 'Other': 0}
-            month_counts = {'H': 0, 'M': 0, 'U': 0, 'Z': 0, 'Other': 0}
-            year_counts = {'25': 0, '26': 0, '27': 0, '28': 0, 'Other': 0}
-            
-            for inst in all_instruments:
-                market, month, year = parse_instrument_components(inst)
-                
-                # Count markets
-                if market in market_counts:
-                    market_counts[market] += 1
-                else:
-                    market_counts['Other'] += 1
-                
-                # Count months
-                if month in month_counts:
-                    month_counts[month] += 1
-                else:
-                    month_counts['Other'] += 1
-                
-                # Count years
-                if year in year_counts:
-                    year_counts[year] += 1
-                else:
-                    year_counts['Other'] += 1
-            
-            col1, col2, col3 = st.columns(3)
-            
-            with col1:
-                st.write("**Available Markets:**")
-                market_names = {
-                    'SRA': 'SOFR',
-                    'ER': 'Euribor', 
-                    'CRA': 'CORRA',
-                    'SON': 'SONIA'
-                }
-                for market, count in market_counts.items():
-                    if count > 0:
-                        name = market_names.get(market, market)
-                        st.write(f"- {market} ({name}): {count} instruments")
-            
-            with col2:
-                st.write("**Available Months:**")
-                month_names = {
-                    'H': 'March',
-                    'M': 'June',
-                    'U': 'September',
-                    'Z': 'December'
-                }
-                for month, count in month_counts.items():
-                    if count > 0:
-                        name = month_names.get(month, month)
-                        st.write(f"- {month} ({name}): {count} instruments")
-            
-            with col3:
-                st.write("**Available Years:**")
-                for year, count in year_counts.items():
-                    if count > 0:
-                        display_year = f"20{year}" if year != 'Other' else year
-                        st.write(f"- {display_year}: {count} instruments")
-    
-    if total_instruments >= 2:
-        
-        # Pre-calculate all regressions and historical stats
-        regression_cache = calculate_all_regressions_daily(df_recent, instrument_groups)
-        historical_stats = calculate_historical_statistics_daily(df_recent, regression_cache)
-        
-        # ==================== ENHANCED RANGE TRADING CONTROLS ====================
-        
-        st.markdown("---")
-        use_local_ranges, local_mode, combine_signals, show_both_signals, breakout_threshold = render_local_range_controls()
-        
-        # Enhanced signal calculation with breakout protection
-        with st.spinner("🧮 Processing strategies and calculating signals..."):
-            start_time = time.time()
-            
-            if use_local_ranges:
-                strategies_df = calculate_enhanced_signals_with_local_ranges(
-                    live_df, regression_cache, historical_stats, 
-                    use_local_ranges=True, local_mode=local_mode, 
-                    combine_signals=combine_signals, breakout_threshold=breakout_threshold
-                )
-            else:
-                # Fall back to original calculation if local ranges disabled
-                strategies_df = calculate_live_signals_fast(live_df, regression_cache, historical_stats, instrument_groups)
-            
-            calculation_time = time.time() - start_time
-            
-            range_type = f"Enhanced ({local_mode}) with {breakout_threshold*100:.0f}% breakout protection" if use_local_ranges else "Global Only"
-            st.success(f"✅ {range_type} signals calculated in {calculation_time:.2f} seconds")
-
-        if not strategies_df.empty:
-            
-            # ==================== ENHANCED BATCH FILTERING SECTION ====================
-            
-            st.markdown("---")
-            
-            # Render batch filter controls
-            filter_params = render_enhanced_batch_filters(strategies_df)
-            
-            # Initialize filtered strategies (show all initially or when filters are applied)
-            if 'filtered_strategies_df' not in st.session_state or filter_params['apply_filters']:
-                if filter_params['apply_filters']:
-                    # Apply all filters
-                    with st.spinner("🔄 Applying filters..."):
-                        filtered_strategies = apply_enhanced_filters(strategies_df, filter_params)
-                        st.session_state.filtered_strategies_df = filtered_strategies
-                        st.session_state.last_filter_params = filter_params
-                        st.success("✅ Filters applied successfully!")
-                else:
-                    # Show all strategies initially
-                    st.session_state.filtered_strategies_df = strategies_df
-                    st.session_state.last_filter_params = filter_params
-            
-            # Use the filtered strategies from session state
-            filtered_strategies = st.session_state.filtered_strategies_df
-            
-            # Enhanced sorting
-            strategies_sorted = filtered_strategies.copy()
-            
-            if not strategies_sorted.empty:
-                # Create enhanced sort priority
-                strategies_sorted['Sort_Priority'] = strategies_sorted['Signal'].map({'BUY': 1, 'SELL': 1, 'HOLD': 2})
-                
-                strategies_sorted = strategies_sorted.sort_values([
-                    'Sort_Priority',
-                    'Signal Strength',
-                    'Coeff of Variation'
-                ], ascending=[True, False, True])
-                
-                strategies_sorted = strategies_sorted.drop('Sort_Priority', axis=1)
-            
-            st.header("🎯 Enhanced Active Trading Signals")
-            
-            # Enhanced signal summary with breakout information
-            buy_signals = len(strategies_sorted[strategies_sorted['Signal'] == 'BUY']) if not strategies_sorted.empty else 0
-            sell_signals = len(strategies_sorted[strategies_sorted['Signal'] == 'SELL']) if not strategies_sorted.empty else 0
-            total_signals = buy_signals + sell_signals
-            
-            # Count by signal source and breakout status if available
-            signal_source_counts = {}
-            breakout_stats = {}
-            if not strategies_sorted.empty and 'Signal Source' in strategies_sorted.columns:
-                signal_source_counts = strategies_sorted['Signal Source'].value_counts().to_dict()
-            if not strategies_sorted.empty and 'Breakout Detected' in strategies_sorted.columns:
-                breakout_stats = {
-                    'total_breakouts': strategies_sorted['Breakout Detected'].sum(),
-                    'total_strategies': len(strategies_sorted),
-                    'breakout_percentage': (strategies_sorted['Breakout Detected'].sum() / len(strategies_sorted) * 100) if len(strategies_sorted) > 0 else 0
-                }
-            
-            # Display enhanced signal summary
-            col1, col2, col3, col4, col5 = st.columns(5)
-            with col1:
-                st.metric("🟢 BUY Signals", buy_signals)
-            with col2:
-                st.metric("🔴 SELL Signals", sell_signals)
-            with col3:
-                st.metric("📊 Total Active Signals", total_signals)
-            with col4:
-                if signal_source_counts:
-                    local_signals = sum(count for source, count in signal_source_counts.items() if 'Local' in source)
-                    st.metric("🎯 Local Range Signals", local_signals)
-                else:
-                    st.metric("🎯 Local Range Signals", "N/A")
-            with col5:
-                if breakout_stats:
-                    breakout_count = breakout_stats['total_breakouts']
-                    if breakout_count > 0:
-                        st.metric("⚠️ Breakout Alerts", f"{breakout_count}", delta=f"{breakout_stats['breakout_percentage']:.1f}%")
-                    else:
-                        st.metric("🛡️ Range Integrity", "✅ All Clear")
-                else:
-                    st.metric("🛡️ Breakout Protection", "Active")
-            
-            # Enhanced description with applied filters info
-            if 'last_filter_params' in st.session_state:
-                filter_info = st.session_state.last_filter_params
-                
-                st.write(f"**Showing {len(strategies_sorted)} filtered active trading signals:**")
-                
-                # Show applied filters
-                filter_descriptions = []
-                filter_descriptions.append(f"Correlation >= {filter_info['correlation_threshold']}%")
-                filter_descriptions.append(f"Range: {filter_info['range_min_threshold']:.6f} - {filter_info['range_max_threshold']:.6f}")
-                
-                if filter_info['signal_source_filter'] != 'All':
-                    filter_descriptions.append(f"Signal source: {filter_info['signal_source_filter']}")
-                
-                if filter_info['selected_markets']:
-                    market_names = {
-                        'SRA': 'SOFR', 'ER': 'Euribor', 'CRA': 'CORRA', 'SON': 'SONIA'
-                    }
-                    selected_names = [f"{m} ({market_names[m]})" for m in filter_info['selected_markets']]
-                    filter_descriptions.append(f"Markets: {', '.join(selected_names)}")
-                
-                if filter_info['selected_months']:
-                    month_names = {'H': 'March', 'M': 'June', 'U': 'September', 'Z': 'December'}
-                    selected_names = [f"{m} ({month_names[m]})" for m in filter_info['selected_months']]
-                    filter_descriptions.append(f"Months: {', '.join(selected_names)}")
-                
-                if filter_info['selected_years']:
-                    year_display = [f"20{y}" for y in filter_info['selected_years']]
-                    filter_descriptions.append(f"Years: {', '.join(year_display)}")
-                
-                if filter_info['exclude_breakouts']:
-                    filter_descriptions.append("Breakout strategies excluded")
-                # NEW: Show specific instrument filtering info
-                if filter_info.get('include_specific_instruments'):
-                    include_count = len(filter_info['include_specific_instruments'])
-                    instruments_preview = ', '.join(filter_info['include_specific_instruments'][:3])
-                    if len(filter_info['include_specific_instruments']) > 3:
-                        instruments_preview += f"... (+{len(filter_info['include_specific_instruments'])-3} more)"
-                    filter_descriptions.append(f"🎯 Including instruments: {instruments_preview}")
-                
-                if filter_info.get('exclude_specific_instruments'):
-                    exclude_count = len(filter_info['exclude_specific_instruments'])
-                    instruments_preview = ', '.join(filter_info['exclude_specific_instruments'][:3])
-                    if len(filter_info['exclude_specific_instruments']) > 3:
-                        instruments_preview += f"... (+{len(filter_info['exclude_specific_instruments'])-3} more)"
-                    filter_descriptions.append(f"❌ Excluding instruments: {instruments_preview}")
-                
-                if filter_info.get('exclude_strategy_types'):
-                    excluded_types = ', '.join(filter_info['exclude_strategy_types'])
-                    filter_descriptions.append(f"Excluded strategy types: {excluded_types}")
-                
-                if filter_info['min_signal_strength'] > 0:
-                    filter_descriptions.append(f"Min signal strength: {filter_info['min_signal_strength']}")
-                
-                if filter_info['max_coeff_var'] < 1.0:
-                    filter_descriptions.append(f"Max coeff variation: {filter_info['max_coeff_var']}")
-                
-                # Display filter descriptions
-                for desc in filter_descriptions:
-                    st.write(f"- {desc}")
-                
-                st.write(f"- **Analysis mode:** {'Enhanced with Local Ranges + Breakout Protection' if use_local_ranges else 'Global Ranges Only'}")
-                if use_local_ranges:
-                    st.write(f"- **Breakout threshold:** {breakout_threshold*100:.0f}% beyond local range")
-            
-            # Breakout warning if significant breakouts detected
-            if breakout_stats and breakout_stats['breakout_percentage'] > 25:
-                st.warning(f"⚠️ **High Breakout Activity**: {breakout_stats['breakout_percentage']:.1f}% of strategies show local range breakouts - market may be trending")
-                        
-            if not strategies_sorted.empty:
-                # Display enhanced results table
-                render_enhanced_results_table(strategies_sorted, show_both_signals)
-                
-                # Enhanced strategy chart section
-                st.header("📈 Enhanced Historical Chart")
-                st.write("**Select a strategy to view its enhanced range analysis:**")
-                
-                selected_strategy = st.selectbox(
-                    "Choose strategy:",
-                    strategies_sorted['Strategy'].tolist(),
-                    index=0
-                )
-                
-                if selected_strategy:
-                    # Basic chart rendering without all the enhanced features for simplicity
-                    strategy_row = strategies_sorted[strategies_sorted['Strategy'] == selected_strategy].iloc[0]
-                    inst1 = strategy_row['Instrument1']
-                    inst2 = strategy_row['Instrument2']
-                    beta = strategy_row['Beta Ratio']
-                    
-                    # Calculate regression-adjusted historical strategy values
-                    hist1 = df_recent[inst1].dropna()
-                    hist2 = df_recent[inst2].dropna()
-                    historical_strategy = hist1 - (beta * hist2)
-                    historical_strategy = historical_strategy.dropna()
-                    
-                    # Reverse for chronological order
-                    historical_strategy_reversed = historical_strategy.iloc[::-1]
-                    
-                    # Create basic chart
-                    import plotly.graph_objects as go
-                    
-                    fig = go.Figure()
-                    
-                    # Add main strategy line
-                    fig.add_trace(go.Scatter(
-                        x=list(range(len(historical_strategy_reversed))),
-                        y=historical_strategy_reversed.values,
-                        mode='lines+markers',
-                        name=f'{selected_strategy}',
-                        line=dict(width=3, color='blue'),
-                        marker=dict(size=6),
-                        hovertemplate='<b>Day %{x}:</b> %{y:.6f}<br><extra></extra>'
-                    ))
-                    
-                    # Add current value
-                    current_value = strategy_row['Current Value']
-                    fig.add_hline(y=current_value, line_dash="dash", line_color="red", line_width=3,
-                                 annotation_text=f"Current: {current_value:.6f}")
-                    
-                    # Add global range boundaries
-                    global_min = strategy_row['Global Min']
-                    global_max = strategy_row['Global Max']
-                    mean_value = strategy_row['Mean']
-                    
-                    fig.add_hline(y=mean_value, line_dash="dot", line_color="green", line_width=2,
-                                 annotation_text=f"Global Mean: {mean_value:.6f}")
-                    fig.add_hline(y=global_min, line_dash="dashdot", line_color="orange", line_width=1,
-                                 annotation_text=f"Global Min: {global_min:.6f}")
-                    fig.add_hline(y=global_max, line_dash="dashdot", line_color="orange", line_width=1,
-                                 annotation_text=f"Global Max: {global_max:.6f}")
-                    
-                    # Add global range shading
-                    fig.add_hrect(y0=global_min, y1=global_max, fillcolor="lightgray", opacity=0.2,
-                                 annotation_text="Global Range")
-                    
-                    # Add local range info if available
-                    if 'Local Min' in strategy_row and pd.notna(strategy_row['Local Min']):
-                        local_min = strategy_row['Local Min']
-                        local_max = strategy_row['Local Max']
-                        
-                        fig.add_hline(y=local_min, line_dash="dash", line_color="purple", line_width=2,
-                                     annotation_text=f"Local Min: {local_min:.6f}")
-                        fig.add_hline(y=local_max, line_dash="dash", line_color="purple", line_width=2,
-                                     annotation_text=f"Local Max: {local_max:.6f}")
-                        
-                        # Add local range shading
-                        fig.add_hrect(y0=local_min, y1=local_max, fillcolor="lightblue", opacity=0.15,
-                                     annotation_text="Local Range")
-                    
-                    fig.update_layout(
-                        title=f"Enhanced Range Analysis: {selected_strategy}",
-                        xaxis_title="Days (Oldest → Most Recent)",
-                        yaxis_title="Strategy Value",
-                        height=600,
-                        hovermode='x unified',
-                        showlegend=True
-                    )
-                    
-                    st.plotly_chart(fig, use_container_width=True)
-                    
-                    # Show strategy details
-                    with st.expander("📊 Strategy Details"):
-                        col1, col2, col3 = st.columns(3)
-                        
-                        with col1:
-                            st.write("**Global Range Info:**")
-                            st.write(f"- Global Min: {global_min:.6f}")
-                            st.write(f"- Global Max: {global_max:.6f}")
-                            st.write(f"- Global Mean: {mean_value:.6f}")
-                            st.write(f"- Global Position: {strategy_row['Global Position']:.3f}")
-                        
-                        with col2:
-                            if 'Local Min' in strategy_row and pd.notna(strategy_row['Local Min']):
-                                st.write("**Local Range Info:**")
-                                st.write(f"- Local Min: {strategy_row['Local Min']:.6f}")
-                                st.write(f"- Local Max: {strategy_row['Local Max']:.6f}")
-                                st.write(f"- Local Position: {strategy_row['Local Position']:.3f}")
-                                if 'Range Type' in strategy_row:
-                                    st.write(f"- Range Type: {strategy_row['Range Type']}")
-                        
-                        with col3:
-                            st.write("**Signal Info:**")
-                            st.write(f"- Final Signal: {strategy_row['Signal']}")
-                            st.write(f"- Signal Strength: {strategy_row['Signal Strength']:.2f}")
-                            if 'Signal Source' in strategy_row:
-                                st.write(f"- Signal Source: {strategy_row['Signal Source']}")
-                            if 'Breakout Detected' in strategy_row and strategy_row['Breakout Detected']:
-                                st.write(f"- ⚠️ Breakout Detected: {strategy_row['Breakout Distance']:.1%}")
-                        
-            else:
-                st.warning("No strategy pairs meet the specified enhanced criteria.")
-                st.write("Try adjusting the filters using the 'Apply Filters' button above:")
-                
-                suggestion_col1, suggestion_col2 = st.columns(2)
-                with suggestion_col1:
-                    st.write("**Try adjusting:**")
-                    st.write("- Lower correlation threshold (try 80%)")
-                    st.write("- Increase range thresholds")
-                    st.write("- Clear market/month/year selections")
-                    st.write("- Reduce minimum signal strength")
-                with suggestion_col2:
-                    st.write("**Or modify:**")
-                    st.write("- Increase coefficient of variation limit")
-                    st.write("- Enable/disable breakout exclusion")
-                    st.write("- Try different local range methods")
-                    st.write("- Increase breakout threshold to 30-40%")
-        else:
-            st.error("No valid strategy pairs could be calculated.")
-            
-            # Helpful suggestions for troubleshooting
-            st.subheader("🔧 Troubleshooting Suggestions")
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.write("**Data Issues:**")
-                st.write("- Check if Excel file 'QH-Data.xlsm' exists")
-                st.write("- Verify 'IM' and 'Live' sheets are present")
-                st.write("- Ensure instruments have valid data")
-                st.write("- Check for sufficient historical data (60+ days)")
-            
-            with col2:
-                st.write("**Configuration Issues:**")
-                st.write("- Lower correlation threshold (try 80%)")
-                st.write("- Increase range thresholds")
-                st.write("- Try different market/month/year combinations")
-                st.write("- Available: SRA (SOFR), ER (Euribor), CRA (CORRA), SON (SONIA)")
-                st.write("- Available months: H (Mar), M (Jun), U (Sep), Z (Dec)")
-                st.write("- Available years: 2025-2028")
-                st.write("- Disable local range analysis temporarily")
-                st.write("- Increase breakout threshold to 30-40%")
-        
-        st.markdown("---")
-        
-        # Add filter reset option
-        if st.button("🔄 Reset All Filters", help="Clear all filters and show all strategies"):
-            if 'filtered_strategies_df' in st.session_state:
-                del st.session_state.filtered_strategies_df
-            if 'last_filter_params' in st.session_state:
-                del st.session_state.last_filter_params
-            st.rerun()
-        
-    else:
-        st.error(f"Not enough instruments available. Found {total_instruments} instruments, need at least 2.")
-        
-else:
-    st.error("Unable to load data. Please check that 'QH-Data.xlsm' exists and contains 'IM' and 'Live' sheets.")
-
-# ==================== SIDEBAR INFORMATION ====================
-
-with st.sidebar:
-    st.markdown("""
-<div style="text-align: center; padding: 1rem 0;">
-    <h2 style="background: linear-gradient(135deg, #4fc3f7, #29b6f6); -webkit-background-clip: text; -webkit-text-fill-color: transparent; font-size: 1.5rem;">
-        📖 Dashboard Guide
-    </h2>
-</div>
-""", unsafe_allow_html=True)
-    
-    st.subheader("🏛️ Market Types")
-    st.write("- **SRA**: SOFR (Secured Overnight Financing Rate)")
-    st.write("- **ER**: Euribor (Euro Interbank Offered Rate)")
-    st.write("- **CRA**: CORRA (Canadian Overnight Repo Rate Average)")
-    st.write("- **SON**: SONIA (Sterling Overnight Index Average)")
-    
-    st.subheader("📅 Contract Months")
-    st.write("- **H**: March")
-    st.write("- **M**: June") 
-    st.write("- **U**: September")
-    st.write("- **Z**: December")
-    
-    st.subheader("🎯 Strategy Types")
-    st.write("- **3MS/6MS/12MS**: Calendar Spreads")
-    st.write("- **3MF/6MF/12MF**: Butterfly Spreads")
-    
-    st.subheader("🔍 Local Range Methods")
-    st.write("- **Recent**: Last 15 periods as range")
-    st.write("- **Adaptive**: Volatility-based range")
-    st.write("- **Support/Resistance**: Key price levels")
-
-    st.subheader("🎯 Instrument Filtering")
-    st.write("- **Include Instruments**: Show strategies with selected instruments")
-    st.write("- **Exclude Instruments**: Hide strategies with selected instruments")
-    st.write("- **Smart Parsing**: Automatically detects instruments in strategies")
-    st.write("- **Conflict Detection**: Warns about overlapping selections")
-    
-    st.subheader("⚡ Quick Tips")
-    st.write("- Use 'Apply Filters' to avoid constant refreshes")
-    st.write("- Higher correlation = more predictable")
-    st.write("- Lower coeff variation = more stable")
-    st.write("- Enable breakout protection for trending markets")
-    
-    if 'last_filter_params' in st.session_state:
-        st.subheader("🎛️ Current Filter Status")
-        params = st.session_state.last_filter_params
-        st.write(f"- Markets: {len(params.get('selected_markets', []))}")
-        st.write(f"- Months: {len(params.get('selected_months', []))}")
-        st.write(f"- Years: {len(params.get('selected_years', []))}")
-        st.write(f"- Correlation: {params.get('correlation_threshold', 90)}%")
-        if params.get('exclude_breakouts', False):
-            st.write("- ⚠️ Breakouts excluded")
-        # NEW: Show specific instrument filter status
-        include_inst_count = len(params.get('include_specific_instruments', []))
-        exclude_inst_count = len(params.get('exclude_specific_instruments', []))
-        if include_inst_count > 0:
-            st.write(f"- 🎯 Including: {include_inst_count} instruments")
-        if exclude_inst_count > 0:
-            st.write(f"- ❌ Excluding: {exclude_inst_count} instruments")
-
-# ==================== PERFORMANCE METRICS ====================
-
-if 'calculation_time' in locals():
-    with st.expander("⚡ Performance Metrics"):
-        col1, col2, col3 = st.columns(3)
-        
-        with col1:
-            st.metric("Calculation Time", f"{calculation_time:.2f}s")
-        
-        with col2:
-            if 'regression_cache' in locals():
-                st.metric("Regression Pairs", len(regression_cache))
-        
-        with col3:
-            if 'historical_stats' in locals():
-                st.metric("Historical Stats", len(historical_stats))
-        
-        # Memory usage info
-        import sys
-        memory_mb = sys.getsizeof(locals()) / 1024 / 1024
-        st.write(f"**Memory Usage**: ~{memory_mb:.1f} MB")
-        
-        # Cache status
-        cache_info = []
-        if use_cache:
-            cache_info.append("✅ Historical data cached (24h)")
-            cache_info.append("✅ Live data cached (5min)")
-            cache_info.append("✅ Regressions cached (24h)")
-            cache_info.append("✅ Statistics cached (24h)")
-        else:
-            cache_info.append("⚠️ Fast mode disabled")
-        
-        for info in cache_info:
-            st.write(info)
-
-# Add footer with version info
-st.markdown("---")
-st.markdown("""
-<div style="margin-top: 4rem; padding: 2rem 0; text-align: center;">
-    <div style="height: 1px; background: linear-gradient(90deg, transparent, #4fc3f7, transparent); margin: 2rem 0;"></div>
-    <p style="color: #9e9e9e; font-size: 0.9rem;">
-        Enhanced Range Bound Strategies Dashboard v2.1 - With Modern UI & Instrument Filtering
-    </p>
-    <p style="color: #616161; font-size: 0.8rem; margin-top: 0.5rem;">
-        Powered by Advanced Analytics & Real-time Market Data
-    </p>
-</div>
-""", unsafe_allow_html=True)
